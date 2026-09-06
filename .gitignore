@@ -1,0 +1,36 @@
+# =========================
+# TC264 / AURIX ADS
+# =========================
+
+# Build outputs
+Debug/
+Release/
+Binaries/
+
+# Compiler generated files
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.d
+*.dep
+
+# ADS / Eclipse workspace metadata
+.metadata/
+
+# VS Code local config
+.vscode/
+
+# Temporary / backup files
+*.tmp
+*.log
+*.bak
+*.swp
+*~
+
+# Windows
+Thumbs.db
+Desktop.ini
