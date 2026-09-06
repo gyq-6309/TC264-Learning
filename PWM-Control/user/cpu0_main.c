@@ -1,50 +1,244 @@
-
 #include "zf_common_headfile.h"
+
 #pragma section all "cpu0_dsram"
 
-#define CHANNEL_NUMBER          (4)
 
-#define PWM_CH1                 (ATOM1_CH5_P20_9)
-#define PWM_CH2                 (ATOM0_CH7_P20_8)
-#define PWM_CH3                 (ATOM0_CH3_P21_5)
-#define PWM_CH4                 (ATOM0_CH2_P21_4)
+//====================================================
+// DRV8701E 单电机驱动模块硬件连接
+//
+// DIR -> P21_4
+// PWM -> P21_5
+// GND -> GND
+//
+// P21_4：普通 GPIO，用于控制电机方向
+// P21_5：PWM 输出，用于控制电机速度
+//====================================================
 
-int16 duty = 0;
-int16 duty_temp = 0;
-uint8 channel_index = 0;
-pwm_channel_enum channel_list[CHANNEL_NUMBER] = {PWM_CH1, PWM_CH2, PWM_CH3, PWM_CH4};
+#define MOTOR_DIR                   (P21_4)
+#define MOTOR_PWM                   (ATOM0_CH3_P21_5)
 
-int core0_main(void)
+
+//====================================================
+// PWM 参数
+//====================================================
+
+// 逐飞 DRV8701E 官方例程使用 17kHz
+#define MOTOR_PWM_FREQ              (17000)
+
+// 任务要求：PWM 占空比最大增加到 4000
+#define MOTOR_DUTY_MAX              (4000)
+
+// 每次增加或减少 20
+#define MOTOR_DUTY_STEP             (20)
+
+// 4000 / 20 = 200 步
+//
+// 200 × 7.5ms = 1.5s
+//
+// 加速：1.5s
+// 减速：1.5s
+//
+// 总计约 3s
+#define MOTOR_RAMP_DELAY_US         (7500)
+
+// 换向前短暂停止
+#define MOTOR_DIRECTION_DELAY_MS    (10)
+
+
+//====================================================
+// 设置电机方向
+//====================================================
+static void motor_set_direction(bool forward)
 {
-    clock_init();                   // 获取时钟频率<务必保留>
-    debug_init();                   // 初始化默认调试串口
-    // 此处编写用户代码 例如外设初始化代码等
+    // 换向之前先关闭 PWM
+    // 避免电机正在高速旋转时直接改变方向
+    pwm_set_duty(MOTOR_PWM, 0);
 
-    pwm_init(PWM_CH1, 17000, 0);                                                // 初始化 PWM 通道 频率 17KHz 初始占空比 0%
-    pwm_init(PWM_CH2, 17000, 0);                                                // 初始化 PWM 通道 频率 17KHz 初始占空比 0%
-    pwm_init(PWM_CH3, 17000, 0);                                                // 初始化 PWM 通道 频率 17KHz 初始占空比 0%
-    pwm_init(PWM_CH4, 17000, 0);                                                // 初始化 PWM 通道 频率 17KHz 初始占空比 0%
+    system_delay_ms(MOTOR_DIRECTION_DELAY_MS);
 
-    // 此处编写用户代码 例如外设初始化代码等
-    cpu_wait_event_ready();         // 等待所有核心初始化完毕
-    while (TRUE)
+
+    if(forward)
     {
-        // 此处编写需要循环执行的代码
-
-        for(duty = 0; duty <= PWM_DUTY_MAX / 2; duty ++)                        // 输出占空比递增到 50%
-        {
-			// 呼吸流水灯
-            for(channel_index = 0; channel_index < CHANNEL_NUMBER; channel_index++) 
-            {
-                duty_temp = (duty + channel_index * PWM_DUTY_MAX / 8) % (PWM_DUTY_MAX / 2) + (PWM_DUTY_MAX / 2); 
-                pwm_set_duty(channel_list[channel_index], duty_temp);           // 更新对应通道占空比
-            }
-            system_delay_us(200);
-        }
-
-        // 此处编写需要循环执行的代码
+        // DIR 输出高电平
+        // 对应一个方向
+        gpio_set_level(MOTOR_DIR, GPIO_HIGH);
+    }
+    else
+    {
+        // DIR 输出低电平
+        // 对应相反方向
+        gpio_set_level(MOTOR_DIR, GPIO_LOW);
     }
 }
 
-#pragma section all restore
 
+//====================================================
+// 单方向运行约 3 秒
+//
+// 运行过程：
+//
+// 0
+// ↓
+// 20
+// ↓
+// 40
+// ↓
+// ...
+// ↓
+// 4000
+//
+// 然后：
+//
+// 4000
+// ↓
+// 3980
+// ↓
+// ...
+// ↓
+// 0
+//
+// 加速约 1.5 秒
+// 减速约 1.5 秒
+//====================================================
+static void motor_run_three_seconds(bool forward)
+{
+    uint16 duty;
+
+
+    //================================================
+    // 1. 设置方向
+    //================================================
+    motor_set_direction(forward);
+
+
+    //================================================
+    // 2. 加速
+    //
+    // duty:
+    //
+    // 0 -> 20 -> 40 -> ... -> 3980
+    //================================================
+    for(duty = 0;
+        duty < MOTOR_DUTY_MAX;
+        duty += MOTOR_DUTY_STEP)
+    {
+        pwm_set_duty(MOTOR_PWM, duty);
+
+        system_delay_us(MOTOR_RAMP_DELAY_US);
+    }
+
+
+    // 设置到最大占空比 4000
+    pwm_set_duty(MOTOR_PWM, MOTOR_DUTY_MAX);
+
+
+    //================================================
+    // 3. 减速
+    //
+    // duty:
+    //
+    // 4000 -> 3980 -> ... -> 20
+    //================================================
+    for(duty = MOTOR_DUTY_MAX;
+        duty > 0;
+        duty -= MOTOR_DUTY_STEP)
+    {
+        pwm_set_duty(MOTOR_PWM, duty);
+
+        system_delay_us(MOTOR_RAMP_DELAY_US);
+    }
+
+
+    //================================================
+    // 4. 最终停止
+    //================================================
+    pwm_set_duty(MOTOR_PWM, 0);
+}
+
+
+//====================================================
+// CPU0 主函数
+//====================================================
+int core0_main(void)
+{
+    //================================================
+    // 系统初始化
+    //================================================
+
+    clock_init();                   // 获取时钟频率，务必保留
+
+    debug_init();                   // 初始化默认调试串口
+
+
+    //================================================
+    // DIR GPIO 初始化
+    //
+    // P21_4
+    //
+    // GPO          ：GPIO 输出
+    // GPIO_LOW     ：初始输出低电平
+    // GPO_PUSH_PULL：推挽输出
+    //================================================
+
+    gpio_init(
+        MOTOR_DIR,
+        GPO,
+        GPIO_LOW,
+        GPO_PUSH_PULL
+    );
+
+
+    //================================================
+    // PWM 初始化
+    //
+    // P21_5
+    //
+    // 频率：17kHz
+    // 初始占空比：0
+    //================================================
+
+    pwm_init(
+        MOTOR_PWM,
+        MOTOR_PWM_FREQ,
+        0
+    );
+
+
+    //================================================
+    // 等待所有 CPU 核心初始化完成
+    //================================================
+
+    cpu_wait_event_ready();
+
+
+    //================================================
+    // 主循环
+    //================================================
+
+    while(TRUE)
+    {
+        //============================================
+        // 正转
+        //
+        // 0 -> 4000 -> 0
+        //
+        // 大约 3 秒
+        //============================================
+
+        motor_run_three_seconds(TRUE);
+
+
+        //============================================
+        // 反转
+        //
+        // 0 -> 4000 -> 0
+        //
+        // 大约 3 秒
+        //============================================
+
+        motor_run_three_seconds(FALSE);
+    }
+}
+
+
+#pragma section all restore
