@@ -1,50 +1,82 @@
-
 #include "zf_common_headfile.h"
 #pragma section all "cpu0_dsram"
 
-#define CHANNEL_NUMBER          (4)
+/*
+ * ç”µæœºé©±åŠ¨æ¥çº¿ï¼ˆé»˜è®¤ï¼Œå¯æŒ‰å®é™…æ¥çº¿ä¿®æ”¹ï¼‰ï¼š
+ * MOTOR_PWM_CH  -> ç”µæœºé©±åŠ¨æ¨¡å— PWM/EN
+ * MOTOR_DIR_IN1 -> ç”µæœºé©±åŠ¨æ¨¡å— IN1
+ * MOTOR_DIR_IN2 -> ç”µæœºé©±åŠ¨æ¨¡å— IN2
+ *
+ * é©±åŠ¨æ¨¡å—ä¸ TC264D æ ¸å¿ƒæ¿å¿…é¡»å…±åœ°ï¼›TC264 GPIO ä¸º 3.3 V ç”µå¹³ã€‚
+ */
+#define MOTOR_PWM_CH               (ATOM0_CH2_P21_4)
+#define MOTOR_DIR_IN1              (P21_2)
+#define MOTOR_DIR_IN2              (P21_3)
 
-#define PWM_CH1                 (ATOM1_CH5_P20_9)
-#define PWM_CH2                 (ATOM0_CH7_P20_8)
-#define PWM_CH3                 (ATOM0_CH3_P21_5)
-#define PWM_CH4                 (ATOM0_CH2_P21_4)
+#define MOTOR_PWM_FREQ             (17000)
+#define MOTOR_DUTY_TARGET          (4000)
+#define MOTOR_DUTY_STEP            (20)
+#define MOTOR_RAMP_DELAY_US        (7500)
+#define MOTOR_DIRECTION_DEADTIME_MS (10)
 
-int16 duty = 0;
-int16 duty_temp = 0;
-uint8 channel_index = 0;
-pwm_channel_enum channel_list[CHANNEL_NUMBER] = {PWM_CH1, PWM_CH2, PWM_CH3, PWM_CH4};
+static void motor_stop(void)
+{
+    pwm_set_duty(MOTOR_PWM_CH, 0);
+    gpio_set_level(MOTOR_DIR_IN1, GPIO_LOW);
+    gpio_set_level(MOTOR_DIR_IN2, GPIO_LOW);
+}
+
+static void motor_set_direction(uint8 forward)
+{
+    /* å…ˆå…³é—­ PWMï¼Œå†æ”¹å˜æ–¹å‘ï¼Œé¿å… H æ¡¥åˆ‡æ¢æ—¶ç›´é€šã€‚ */
+    pwm_set_duty(MOTOR_PWM_CH, 0);
+    gpio_set_level(MOTOR_DIR_IN1, forward ? GPIO_HIGH : GPIO_LOW);
+    gpio_set_level(MOTOR_DIR_IN2, forward ? GPIO_LOW : GPIO_HIGH);
+    system_delay_ms(MOTOR_DIRECTION_DEADTIME_MS);
+}
+
+/*
+ * å•æ–¹å‘è¿è¡Œçº¦ 3 ç§’ï¼š
+ * 0 -> 4000 ç”¨æ—¶ 1.5 ç§’ï¼Œ4000 -> 0 ç”¨æ—¶ 1.5 ç§’ã€‚
+ */
+static void motor_run_for_three_seconds(uint8 forward)
+{
+    int16 duty;
+
+    motor_set_direction(forward);
+
+    for (duty = 0; duty < MOTOR_DUTY_TARGET; duty += MOTOR_DUTY_STEP)
+    {
+        pwm_set_duty(MOTOR_PWM_CH, duty);
+        system_delay_us(MOTOR_RAMP_DELAY_US);
+    }
+    pwm_set_duty(MOTOR_PWM_CH, MOTOR_DUTY_TARGET);
+
+    for (duty = MOTOR_DUTY_TARGET; duty > 0; duty -= MOTOR_DUTY_STEP)
+    {
+        pwm_set_duty(MOTOR_PWM_CH, duty);
+        system_delay_us(MOTOR_RAMP_DELAY_US);
+    }
+
+    motor_stop();
+}
 
 int core0_main(void)
 {
-    clock_init();                   // »ñÈ¡Ê±ÖÓÆµÂÊ<Îñ±Ø±£Áô>
-    debug_init();                   // ³õÊ¼»¯Ä¬ÈÏµ÷ÊÔ´®¿Ú
-    // ´Ë´¦±àĞ´ÓÃ»§´úÂë ÀıÈçÍâÉè³õÊ¼»¯´úÂëµÈ
+    clock_init();                   // è·å–æ—¶é’Ÿé¢‘ç‡<åŠ¡å¿…ä¿ç•™>
+    debug_init();                   // åˆå§‹åŒ–é»˜è®¤è°ƒè¯•ä¸²å£
 
-    pwm_init(PWM_CH1, 17000, 0);                                                // ³õÊ¼»¯ PWM Í¨µÀ ÆµÂÊ 17KHz ³õÊ¼Õ¼¿Õ±È 0%
-    pwm_init(PWM_CH2, 17000, 0);                                                // ³õÊ¼»¯ PWM Í¨µÀ ÆµÂÊ 17KHz ³õÊ¼Õ¼¿Õ±È 0%
-    pwm_init(PWM_CH3, 17000, 0);                                                // ³õÊ¼»¯ PWM Í¨µÀ ÆµÂÊ 17KHz ³õÊ¼Õ¼¿Õ±È 0%
-    pwm_init(PWM_CH4, 17000, 0);                                                // ³õÊ¼»¯ PWM Í¨µÀ ÆµÂÊ 17KHz ³õÊ¼Õ¼¿Õ±È 0%
+    pwm_init(MOTOR_PWM_CH, MOTOR_PWM_FREQ, 0);
+    gpio_init(MOTOR_DIR_IN1, GPO, GPIO_LOW, GPO_PUSH_PULL);
+    gpio_init(MOTOR_DIR_IN2, GPO, GPIO_LOW, GPO_PUSH_PULL);
 
-    // ´Ë´¦±àĞ´ÓÃ»§´úÂë ÀıÈçÍâÉè³õÊ¼»¯´úÂëµÈ
-    cpu_wait_event_ready();         // µÈ´ıËùÓĞºËĞÄ³õÊ¼»¯Íê±Ï
+    cpu_wait_event_ready();         // ç­‰å¾…æ‰€æœ‰æ ¸å¿ƒåˆå§‹åŒ–å®Œæ¯•
+
     while (TRUE)
     {
-        // ´Ë´¦±àĞ´ĞèÒªÑ­»·Ö´ĞĞµÄ´úÂë
-
-        for(duty = 0; duty <= PWM_DUTY_MAX / 2; duty ++)                        // Êä³öÕ¼¿Õ±ÈµİÔöµ½ 50%
-        {
-			// ºôÎüÁ÷Ë®µÆ
-            for(channel_index = 0; channel_index < CHANNEL_NUMBER; channel_index++) 
-            {
-                duty_temp = (duty + channel_index * PWM_DUTY_MAX / 8) % (PWM_DUTY_MAX / 2) + (PWM_DUTY_MAX / 2); 
-                pwm_set_duty(channel_list[channel_index], duty_temp);           // ¸üĞÂ¶ÔÓ¦Í¨µÀÕ¼¿Õ±È
-            }
-            system_delay_us(200);
-        }
-
-        // ´Ë´¦±àĞ´ĞèÒªÑ­»·Ö´ĞĞµÄ´úÂë
+        motor_run_for_three_seconds(TRUE);   // æ­£è½¬ï¼š0 -> 4000 -> 0ï¼Œçº¦ 3 ç§’
+        motor_run_for_three_seconds(FALSE);  // åè½¬ï¼š0 -> 4000 -> 0ï¼Œçº¦ 3 ç§’
     }
 }
 
 #pragma section all restore
-
